@@ -22,8 +22,9 @@ var dnsForwarders = []string{
 	"1.1.1.1:53", // Cloudflare DNS
 }
 
-// localRecords adalah "database" sederhana untuk zona lokal kita.
+// localRecords adalah "database" sederhana untuk domain-domain yang ingin direspon secara lokal.
 // Key adalah nama domain (lengkap dengan titik di akhir), value adalah alamat IP.
+// HANYA domain yang ada di map ini yang akan direspon secara lokal.
 var localRecords = map[string]string{
 	"pacebook.com.":  "10.180.53.85",
 	"klikbeca.com.":  "10.180.53.227",
@@ -39,39 +40,32 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m.Compress = false
 
 	// Iterasi melalui setiap pertanyaan dalam pesan request.
-	// Satu pesan DNS bisa berisi beberapa pertanyaan.
 	for _, q := range r.Question {
+		queryNameLower := strings.ToLower(q.Name)
 		log.Printf("Query untuk: %s (Tipe: %s)", q.Name, dns.TypeToString[q.Qtype])
 
-		// Cek apakah ini adalah permintaan untuk zona lokal kita.
-		// Kita gunakan strings.HasSuffix untuk menangkap semua subdomain.
-		if strings.HasSuffix(strings.ToLower(q.Name), ".lan.") {
-			// Ini adalah zona lokal, cari di localRecords.
-			ip, found := localRecords[strings.ToLower(q.Name)]
-			if found {
-				log.Printf("  -> Ditemukan di zona lokal: %s -> %s", q.Name, ip)
-				// Buat sebuah A record (Address Record) untuk jawabannya.
-				rr, err := dns.NewRR(fmt.Sprintf("%s A %s", q.Name, ip))
-				if err == nil {
-					m.Answer = append(m.Answer, rr)
-				}
-			} else {
-				log.Printf("  -> Tidak ditemukan di zona lokal: %s", q.Name)
+		// LANGKAH 1: Cek langsung di localRecords.
+		ip, found := localRecords[queryNameLower]
+
+		if found {
+			// LANGKAH 2a: Ditemukan di lokal, jawab dengan IP lokal dan STOP.
+			log.Printf("  -> Ditemukan di localRecords: %s -> %s", q.Name, ip)
+			rr, err := dns.NewRR(fmt.Sprintf("%s A %s", q.Name, ip))
+			if err == nil {
+				m.Answer = append(m.Answer, rr)
 			}
 		} else {
-			// Ini bukan zona lokal, teruskan (forward) ke server DNS upstream.
-			log.Printf("  -> Meneruskan ke upstream...")
+			// LANGKAH 2b: Tidak ditemukan di lokal, forward ke upstream.
+			log.Printf("  -> Tidak ditemukan di localRecords. Meneruskan ke upstream...")
 
-			// Buat koneksi baru ke server upstream untuk setiap pertanyaan.
-			// Untuk performa lebih baik, Anda bisa menggunakan connection pooling.
 			c := new(dns.Client)
-			c.Net = "udp" // Gunakan UDP untuk query standar
+			c.Net = "udp"
 			c.Timeout = 2 * time.Second
 
-			// Coba setiap forwarder sampai ada yang berhasil.
 			var forwardedResponse *dns.Msg
 			var err error
 			for _, forwarder := range dnsForwarders {
+				// Gunakan r (pesan asli) untuk forwarding
 				forwardedResponse, _, err = c.Exchange(r, forwarder)
 				if err == nil {
 					log.Printf("  -> Berhasil mendapat jawaban dari %s", forwarder)
@@ -81,11 +75,9 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			}
 
 			if err != nil {
-				// Jika semua forwarder gagal, kita tidak bisa menjawab.
 				log.Printf("  -> Semua upstream gagal. Tidak dapat menjawab query untuk %s", q.Name)
-				// Kita bisa mengembalikan pesan kosong (yang akan dianggap NXDOMAIN oleh klien)
-				// atau mengatur Rcode ke ServerFailure.
-				m.Rcode = dns.RcodeServerFailure
+				// Jika semua forwarder gagal, kita bisa mengembalikan pesan ServerFailure
+				m.SetRcode(r, dns.RcodeServerFailure)
 			} else {
 				// Jika berhasil, gabungkan jawaban dari upstream ke pesan balasan kita.
 				m.Answer = append(m.Answer, forwardedResponse.Answer...)
@@ -93,7 +85,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
-	// Kirimkan balasan ke klien.
+	// Kirimkan balaban ke klien.
 	w.WriteMsg(m)
 }
 
@@ -101,12 +93,12 @@ func main() {
 	// Siapkan server DNS
 	server := &dns.Server{
 		Addr:    listenAddr,
-		Net:     "udp", // DNS biasanya berjalan di atas UDP
+		Net:     "udp",
 		Handler: dns.HandlerFunc(handleDNSRequest),
 	}
 
 	log.Printf("Memulai DNS Forwarder pada %s", listenAddr)
-	log.Printf("Zona lokal yang dikonfigurasi:")
+	log.Printf("Records lokal yang dikonfigurasi (hanya ini yang akan direspon secara lokal):")
 	for domain := range localRecords {
 		log.Printf("  - %s -> %s", domain, localRecords[domain])
 	}
