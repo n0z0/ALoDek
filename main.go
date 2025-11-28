@@ -25,9 +25,9 @@ var dnsForwarders = []string{
 // localRecords adalah "database" sederhana untuk zona lokal kita.
 // Key adalah nama domain (lengkap dengan titik di akhir), value adalah alamat IP.
 var localRecords = map[string]string{
-	"server.anu.lan.":   "192.168.1.10",
-	"database.anu.lan.": "192.168.1.11",
-	"router.lan.":       "192.168.1.1",
+	"pacebook.com.":  "10.180.53.85",
+	"klikbeca.com.":  "10.180.53.227",
+	"login.hotspot.": "10.180.52.198",
 }
 
 // --- AKHIR KONFIGURASI ---
